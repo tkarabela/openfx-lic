@@ -13,6 +13,6 @@ set(SRC
 
 set(CMAKE_CXX_STANDARD 14)
 
-add_library(openfx-invert SHARED invert.cpp ${SRC})
-target_include_directories(openfx-invert PRIVATE ${INC})
-set_target_properties(openfx-invert PROPERTIES SUFFIX ".ofx")
+add_library(lic SHARED lic.cpp ${SRC})
+target_include_directories(lic PRIVATE ${INC})
+set_target_properties(lic PROPERTIES SUFFIX ".ofx")
