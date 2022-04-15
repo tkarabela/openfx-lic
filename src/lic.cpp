@@ -41,29 +41,21 @@ England
 
 #include <cstdio>
 #include <random>
-#include <array>
 #include "ofxsImageEffect.h"
 #include "ofxsMultiThread.h"
-
+#include "SimplexNoise.h"
 #include "ofxsProcessing.H"
-
-#define RANDOM_SIZE 128
 
 // Base class for the RGBA and the Alpha processor
 class LICProcessor : public OFX::ImageProcessor {
 protected :
     OFX::Image *vectorXImg_;
     OFX::Image *vectorYImg_;
-    std::array<float, RANDOM_SIZE*RANDOM_SIZE> randomData;
+    SimplexNoise noise;
 
     float sampleRandomData(float x, float y) const {
-        int x_ = (int)x;
-        int y_ = (int)y; // TODO bilinear
-
-        x_ %= RANDOM_SIZE;
-        y_ %= RANDOM_SIZE;
-
-        return randomData[x_*RANDOM_SIZE + y_];
+        float frequency = 1.0;
+        return noise.noise(frequency*x, frequency*y);
     }
 
 public :
@@ -72,14 +64,7 @@ public :
     : OFX::ImageProcessor(instance)
     , vectorXImg_(nullptr)
     , vectorYImg_(nullptr)
-    , randomData()
   {
-      std::random_device rd;
-      std::mt19937 e2(rd());
-      std::uniform_real_distribution<> dist(0, 1);
-      for (auto &x : randomData) {
-          x = (float)dist(e2);
-      }
   }
 
     void setVectorXImg(OFX::Image *v) {vectorXImg_ = v;}
@@ -89,7 +74,6 @@ public :
     void multiThreadProcessImages(OfxRectI procWindow) override
     {
       const int nComponents = 1;
-      const float max = 1.0;
 
       for(int y = procWindow.y1; y < procWindow.y2; y++) {
             if(_effect.abort()) break;

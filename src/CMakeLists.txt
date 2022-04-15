@@ -3,13 +3,15 @@ set(INC
         ../openfx/Support/include
         ../openfx/Support/Library
         ../openfx/Support/Plugins/include
+        ../SimplexNoise/src
         )
 
 file(GLOB SUPPORT_LIB
         ../openfx/Support/Library/*.cpp)
 
 set(SRC
-        ${SUPPORT_LIB})
+        ${SUPPORT_LIB}
+        ../SimplexNoise/src/SimplexNoise.cpp)
 
 set(CMAKE_CXX_STANDARD 14)
 
