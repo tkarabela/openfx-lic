@@ -46,16 +46,38 @@ England
 #include "SimplexNoise.h"
 #include "ofxsProcessing.H"
 
+template <typename T>
+static inline T clamp(T value, T lower, T upper)
+{
+    if (value < lower) {
+        return lower;
+    } else if (value > upper) {
+        return upper;
+    }
+    return value;
+}
+
 // Base class for the RGBA and the Alpha processor
 class LICProcessor : public OFX::ImageProcessor {
 protected :
     OFX::Image *vectorXImg_;
     OFX::Image *vectorYImg_;
     SimplexNoise noise;
+    float frequency;
 
-    float sampleRandomData(float x, float y) const {
-        float frequency = 1.0;
-        return noise.noise(frequency*x, frequency*y);
+    inline float sampleRandomData(float x, float y) {
+        return 0.5+0.5*noise.noise(frequency*x, frequency*y);
+    }
+
+    inline float sampleImageData(OFX::Image *img, float x, float y) {
+        int x_ = int(x);
+        int y_ = int(y);
+        auto bounds = img->getBounds();
+
+        x_ = clamp(x_, bounds.x1, bounds.x2-1);
+        y_ = clamp(y_, bounds.y1, bounds.y2-1);
+
+        return *(float*)img->getPixelAddress(x_, y_);
     }
 
 public :
@@ -64,16 +86,19 @@ public :
     : OFX::ImageProcessor(instance)
     , vectorXImg_(nullptr)
     , vectorYImg_(nullptr)
+    , frequency(1)
   {
   }
 
     void setVectorXImg(OFX::Image *v) {vectorXImg_ = v;}
     void setVectorYImg(OFX::Image *v) {vectorYImg_ = v;}
+    void setFrequency(float d) {frequency = d;}
 
     // and do some processing
     void multiThreadProcessImages(OfxRectI procWindow) override
     {
       const int nComponents = 1;
+      const int numSteps = 15;  // XXX make it parameter
 
       for(int y = procWindow.y1; y < procWindow.y2; y++) {
             if(_effect.abort()) break;
@@ -81,12 +106,59 @@ public :
             auto dstPix = (float *) _dstImg->getPixelAddress(procWindow.x1, y);
 
             for(int x = procWindow.x1; x < procWindow.x2; x++) {
+                auto px0 = (float)x, py0 = (float)y;
+                float px, py;
+                float acc = 0.0f;
+                int samples = 0;
 
-                float value = sampleRandomData((float)x, (float)y);
+                acc += sampleRandomData(px0, py0);
+                samples++;
+
+                // integrate forward
+                px = px0, py = py0;
+                for (int i = 0; i < numSteps; i++)
+                {
+                    float ux = sampleImageData(vectorXImg_, px, py);
+                    float uy = sampleImageData(vectorYImg_, px, py);
+
+                    // normalize
+                    float umag = sqrtf(ux*ux + uy*uy);
+                    ux /= umag;
+                    uy /= umag;
+
+                    px += ux;
+                    py += uy;
+                    float value = sampleRandomData(px, py);
+                    if (std::isnan(value)) break;
+                    acc += value;
+                    samples++;
+                }
+
+                // integrate backward
+                px = px0, py = py0;
+                for (int i = 0; i < numSteps; i++)
+                {
+                    float ux = sampleImageData(vectorXImg_, px, py);
+                    float uy = sampleImageData(vectorYImg_, px, py);
+
+                    // normalize
+                    float umag = sqrtf(ux*ux + uy*uy);
+                    ux /= umag;
+                    uy /= umag;
+
+                    px -= ux;
+                    py -= uy;
+                    float value = sampleRandomData(px, py);
+                    if (std::isnan(value)) break;
+                    acc += value;
+                    samples++;
+                }
+
+                float value = acc / samples;
                 *dstPix = value;
 
                 // increment the dst pixel
-                dstPix += nComponents;
+                dstPix++;
             }
         }
     }
@@ -100,6 +172,7 @@ protected :
   OFX::Clip *vectorXClip_;
   OFX::Clip *vectorYClip_;
   OFX::Clip *dstClip_;
+  OFX::DoubleParam  *frequency_;
 
 public :
   /** @brief ctor */
@@ -108,10 +181,15 @@ public :
     , vectorXClip_(nullptr)
     , vectorYClip_(nullptr)
     , dstClip_(nullptr)
+    , frequency_(nullptr)
   {
-    vectorXClip_ = fetchClip("VectorX");
-    vectorYClip_ = fetchClip("VectorY");
-    dstClip_ = fetchClip(kOfxImageEffectSimpleSourceClipName);
+        fprintf(stderr, "LICPlugin::LICPlugin()...\n");
+
+        vectorXClip_ = fetchClip("VectorX");
+        vectorYClip_ = fetchClip("VectorY");
+        dstClip_ = fetchClip(kOfxImageEffectOutputClipName);
+
+      frequency_ = fetchDoubleParam("frequency");
   }
 
   /* Override the render */
@@ -136,6 +214,7 @@ LICPlugin::setupAndProcess(LICProcessor &processor, const OFX::RenderArguments &
     std::unique_ptr<OFX::Image> dst(dstClip_->fetchImage(args.time));
     std::unique_ptr<OFX::Image> vectorX(vectorXClip_->fetchImage(args.time));
     std::unique_ptr<OFX::Image> vectorY(vectorYClip_->fetchImage(args.time));
+    double frequency = frequency_->getValueAtTime(args.time);
 
     if (!dst || !vectorX || !vectorY)
     {
@@ -163,6 +242,7 @@ LICPlugin::setupAndProcess(LICProcessor &processor, const OFX::RenderArguments &
   processor.setDstImg(dst.get());
   processor.setVectorXImg(vectorX.get());
   processor.setVectorYImg(vectorY.get());
+  processor.setFrequency((float)frequency);
 
   // set the render window
   processor.setRenderWindow(args.renderWindow);
@@ -200,7 +280,8 @@ mDeclarePluginFactory(LICPluginFactory, {}, {});
 using namespace OFX;
 void LICPluginFactory::describe(OFX::ImageEffectDescriptor &desc)
 {
-  desc.setLabels("LIC", "LIC", "Line Integral Convolution");
+    fprintf(stderr, "LICPluginFactory::describe...\n");
+    desc.setLabels("LIC", "LIC", "Line Integral Convolution");
   desc.setPluginGrouping("LIC");
 
   desc.addSupportedContext(eContextGeneral);
@@ -219,8 +300,9 @@ void LICPluginFactory::describe(OFX::ImageEffectDescriptor &desc)
   desc.setSupportsMultipleClipPARs(false);
 }
 
-void LICPluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc, OFX::ContextEnum /*context*/)
+void LICPluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc, OFX::ContextEnum contextEnum)
 {
+    fprintf(stderr, "LICPluginFactory::describeInContext, context = %d...\n", contextEnum);
     ClipDescriptor *vectorXClip = desc.defineClip("VectorX");
     vectorXClip->addSupportedComponent(ePixelComponentAlpha);
     vectorXClip->setLabels("Vector X", "Vector X", "Vector X");
@@ -231,11 +313,22 @@ void LICPluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc, OFX::
 
     ClipDescriptor *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
     dstClip->addSupportedComponent(ePixelComponentAlpha);
+
+    DoubleParamDescriptor *param = desc.defineDoubleParam("frequency");
+    param->setLabels("frequency", "frequency", "frequency");
+    param->setScriptName("frequency");
+    param->setHint("scales the noise size");
+    param->setDefault(0.2);
+    param->setRange(0, 2);
+    param->setIncrement(0.01);
+    param->setDisplayRange(0, 2);
+    param->setDoubleType(eDoubleTypeScale);
 }
 
-OFX::ImageEffect* LICPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum /*context*/)
+OFX::ImageEffect* LICPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum contextEnum)
 {
-  return new LICPlugin(handle);
+    fprintf(stderr, "LICPluginFactory::createInstance, context = %d...\n", contextEnum);
+    return new LICPlugin(handle);
 }
 
 namespace OFX

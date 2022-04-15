@@ -14,6 +14,7 @@ set(SRC
         ../SimplexNoise/src/SimplexNoise.cpp)
 
 set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG")
 
 add_library(lic SHARED lic.cpp ${SRC})
 target_include_directories(lic PRIVATE ${INC})
