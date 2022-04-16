@@ -57,6 +57,15 @@ static inline T clamp(T value, T lower, T upper)
     return value;
 }
 
+template <typename T>
+static inline bool is_one_of(T value, std::initializer_list<T> choices)
+{
+    for (const auto &x : choices) {
+        if (x == value) return true;
+    }
+    return false;
+}
+
 // Base class for the RGBA and the Alpha processor
 class LICProcessor : public OFX::ImageProcessor {
 protected :
@@ -64,6 +73,7 @@ protected :
     OFX::Image *vectorYImg_;
     SimplexNoise noise;
     float frequency;
+    int num_steps;
 
     inline float sampleRandomData(float x, float y) {
         return 0.5+0.5*noise.noise(frequency*x, frequency*y);
@@ -87,18 +97,19 @@ public :
     , vectorXImg_(nullptr)
     , vectorYImg_(nullptr)
     , frequency(1)
+    , num_steps(15)
   {
   }
 
     void setVectorXImg(OFX::Image *v) {vectorXImg_ = v;}
     void setVectorYImg(OFX::Image *v) {vectorYImg_ = v;}
     void setFrequency(float d) {frequency = d;}
+    void setNumSteps(int d) {num_steps = d;}
 
     // and do some processing
     void multiThreadProcessImages(OfxRectI procWindow) override
     {
-      const int nComponents = 1;
-      const int numSteps = 15;  // XXX make it parameter
+        assert(_dstImg->getPixelComponents() == OFX::ePixelComponentRGBA);
 
       for(int y = procWindow.y1; y < procWindow.y2; y++) {
             if(_effect.abort()) break;
@@ -116,7 +127,7 @@ public :
 
                 // integrate forward
                 px = px0, py = py0;
-                for (int i = 0; i < numSteps; i++)
+                for (int i = 0; i < num_steps; i++)
                 {
                     float ux = sampleImageData(vectorXImg_, px, py);
                     float uy = sampleImageData(vectorYImg_, px, py);
@@ -136,7 +147,7 @@ public :
 
                 // integrate backward
                 px = px0, py = py0;
-                for (int i = 0; i < numSteps; i++)
+                for (int i = 0; i < num_steps; i++)
                 {
                     float ux = sampleImageData(vectorXImg_, px, py);
                     float uy = sampleImageData(vectorYImg_, px, py);
@@ -155,10 +166,15 @@ public :
                 }
 
                 float value = acc / samples;
-                *dstPix = value;
+                float alpha = (samples > 1) ? 0.0f : 1.0f;
+
+                dstPix[0] = value; // = R
+                dstPix[1] = value; // = G
+                dstPix[2] = value; // = B
+                dstPix[3] = alpha; // = A
 
                 // increment the dst pixel
-                dstPix++;
+                dstPix += 4;
             }
         }
     }
@@ -172,7 +188,8 @@ protected :
   OFX::Clip *vectorXClip_;
   OFX::Clip *vectorYClip_;
   OFX::Clip *dstClip_;
-  OFX::DoubleParam  *frequency_;
+    OFX::DoubleParam  *frequency_;
+    OFX::IntParam  *num_steps_;
 
 public :
   /** @brief ctor */
@@ -182,6 +199,7 @@ public :
     , vectorYClip_(nullptr)
     , dstClip_(nullptr)
     , frequency_(nullptr)
+    , num_steps_(nullptr)
   {
         fprintf(stderr, "LICPlugin::LICPlugin()...\n");
 
@@ -190,6 +208,7 @@ public :
         dstClip_ = fetchClip(kOfxImageEffectOutputClipName);
 
       frequency_ = fetchDoubleParam("frequency");
+      num_steps_ = fetchIntParam("num_steps");
   }
 
   /* Override the render */
@@ -215,6 +234,7 @@ LICPlugin::setupAndProcess(LICProcessor &processor, const OFX::RenderArguments &
     std::unique_ptr<OFX::Image> vectorX(vectorXClip_->fetchImage(args.time));
     std::unique_ptr<OFX::Image> vectorY(vectorYClip_->fetchImage(args.time));
     double frequency = frequency_->getValueAtTime(args.time);
+    int num_steps = num_steps_->getValueAtTime(args.time);
 
     if (!dst || !vectorX || !vectorY)
     {
@@ -230,11 +250,11 @@ LICPlugin::setupAndProcess(LICProcessor &processor, const OFX::RenderArguments &
         throw int(1); // XXX need to throw an sensible exception here!
     }
 
-    if (dst->getPixelComponents() != OFX::ePixelComponentAlpha ||
-        vectorX->getPixelComponents() != OFX::ePixelComponentAlpha ||
-        vectorY->getPixelComponents() != OFX::ePixelComponentAlpha)
+    if (!is_one_of(vectorX->getPixelComponents(), {OFX::ePixelComponentAlpha, OFX::ePixelComponentRGB, OFX::ePixelComponentRGBA}) ||
+        !is_one_of(vectorY->getPixelComponents(), {OFX::ePixelComponentAlpha, OFX::ePixelComponentRGB, OFX::ePixelComponentRGBA}) ||
+        dst->getPixelComponents() != OFX::ePixelComponentRGBA)
     {
-        fprintf(stderr, "LICPlugin::setupAndProcess got image with pixel components != alpha\n");
+        fprintf(stderr, "LICPlugin::setupAndProcess got image with unsupported pixel components\n");
         throw int(1); // XXX need to throw an sensible exception here!
     }
 
@@ -242,7 +262,8 @@ LICPlugin::setupAndProcess(LICProcessor &processor, const OFX::RenderArguments &
   processor.setDstImg(dst.get());
   processor.setVectorXImg(vectorX.get());
   processor.setVectorYImg(vectorY.get());
-  processor.setFrequency((float)frequency);
+    processor.setFrequency((float)frequency);
+    processor.setNumSteps(num_steps);
 
   // set the render window
   processor.setRenderWindow(args.renderWindow);
@@ -263,11 +284,11 @@ LICPlugin::render(const OFX::RenderArguments &args)
         OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
     }
 
-    if (vectorXClip_->getPixelComponents() != OFX::ePixelComponentAlpha ||
-        vectorYClip_->getPixelComponents() != OFX::ePixelComponentAlpha ||
-        dstClip_->getPixelComponents() != OFX::ePixelComponentAlpha)
+    if (!is_one_of(vectorXClip_->getPixelComponents(), {OFX::ePixelComponentAlpha, OFX::ePixelComponentRGB, OFX::ePixelComponentRGBA}) ||
+        !is_one_of(vectorYClip_->getPixelComponents(), {OFX::ePixelComponentAlpha, OFX::ePixelComponentRGB, OFX::ePixelComponentRGBA}) ||
+        dstClip_->getPixelComponents() != OFX::ePixelComponentRGBA)
     {
-        fprintf(stderr, "LICPlugin::render got clip with pixel components != alpha\n");
+        fprintf(stderr, "LICPlugin::render got clip with unsupported pixel components\n");
         OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
     }
 
@@ -303,26 +324,38 @@ void LICPluginFactory::describe(OFX::ImageEffectDescriptor &desc)
 void LICPluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc, OFX::ContextEnum contextEnum)
 {
     fprintf(stderr, "LICPluginFactory::describeInContext, context = %d...\n", contextEnum);
-    ClipDescriptor *vectorXClip = desc.defineClip("VectorX");
+    auto *vectorXClip = desc.defineClip("VectorX");
     vectorXClip->addSupportedComponent(ePixelComponentAlpha);
+    vectorXClip->addSupportedComponent(ePixelComponentRGB);
+    vectorXClip->addSupportedComponent(ePixelComponentRGBA);
     vectorXClip->setLabels("Vector X", "Vector X", "Vector X");
 
-    ClipDescriptor *vectorYClip = desc.defineClip("VectorY");
+    auto *vectorYClip = desc.defineClip("VectorY");
     vectorYClip->addSupportedComponent(ePixelComponentAlpha);
+    vectorXClip->addSupportedComponent(ePixelComponentRGB);
+    vectorXClip->addSupportedComponent(ePixelComponentRGBA);
     vectorYClip->setLabels("Vector Y", "Vector Y", "Vector Y");
 
-    ClipDescriptor *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
-    dstClip->addSupportedComponent(ePixelComponentAlpha);
+    auto *dstClip = desc.defineClip(kOfxImageEffectOutputClipName);
+    dstClip->addSupportedComponent(ePixelComponentRGBA);
 
-    DoubleParamDescriptor *param = desc.defineDoubleParam("frequency");
-    param->setLabels("frequency", "frequency", "frequency");
-    param->setScriptName("frequency");
-    param->setHint("scales the noise size");
-    param->setDefault(0.2);
-    param->setRange(0, 2);
-    param->setIncrement(0.01);
-    param->setDisplayRange(0, 2);
-    param->setDoubleType(eDoubleTypeScale);
+    auto *frequency = desc.defineDoubleParam("frequency");
+    frequency->setLabels("frequency", "frequency", "frequency");
+    frequency->setScriptName("frequency");
+    frequency->setHint("scales the noise size");
+    frequency->setDefault(0.2);
+    frequency->setRange(0, 2);
+    frequency->setIncrement(0.01);
+    frequency->setDisplayRange(0, 2);
+    frequency->setDoubleType(eDoubleTypeScale);
+
+    auto *num_steps = desc.defineIntParam("num_steps");
+    num_steps->setLabels("num_steps", "Num. steps", "Number of steps");
+    num_steps->setScriptName("num_steps");
+    num_steps->setHint("number of forward/backward integration steps");
+    num_steps->setDefault(15);
+    num_steps->setRange(1, 50);
+    num_steps->setDisplayRange(1, 50);
 }
 
 OFX::ImageEffect* LICPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum contextEnum)
