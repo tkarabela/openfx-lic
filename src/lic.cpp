@@ -124,45 +124,52 @@ public :
 
                 acc += sampleRandomData(px0, py0);
                 samples++;
+                float ux = sampleImageData(vectorXImg_, px0, py0);
+                float uy = sampleImageData(vectorYImg_, px0, py0);
 
-                // integrate forward
-                px = px0, py = py0;
-                for (int i = 0; i < num_steps; i++)
-                {
-                    float ux = sampleImageData(vectorXImg_, px, py);
-                    float uy = sampleImageData(vectorYImg_, px, py);
+                if (ux != 0 || uy != 0) {
+                    // integrate forward
+                    px = px0, py = py0;
+                    for (int i = 0; i < num_steps; i++)
+                    {
+                        ux = sampleImageData(vectorXImg_, px, py);
+                        uy = sampleImageData(vectorYImg_, px, py);
 
-                    // normalize
-                    float umag = sqrtf(ux*ux + uy*uy);
-                    ux /= umag;
-                    uy /= umag;
+                        // normalize
+                        float umag = sqrtf(ux*ux + uy*uy);
+                        ux /= umag;
+                        uy /= umag;
 
-                    px += ux;
-                    py += uy;
-                    float value = sampleRandomData(px, py);
-                    if (std::isnan(value)) break;
-                    acc += value;
-                    samples++;
-                }
+                        px += ux;
+                        py += uy;
+                        float value = sampleRandomData(px, py);
+                        if (std::isnan(value)) break;
+                        acc += value;
+                        samples++;
+                    }
 
-                // integrate backward
-                px = px0, py = py0;
-                for (int i = 0; i < num_steps; i++)
-                {
-                    float ux = sampleImageData(vectorXImg_, px, py);
-                    float uy = sampleImageData(vectorYImg_, px, py);
+                    // integrate backward
+                    px = px0, py = py0;
+                    for (int i = 0; i < num_steps; i++)
+                    {
+                        ux = sampleImageData(vectorXImg_, px, py);
+                        uy = sampleImageData(vectorYImg_, px, py);
 
-                    // normalize
-                    float umag = sqrtf(ux*ux + uy*uy);
-                    ux /= umag;
-                    uy /= umag;
+                        // normalize
+                        float umag = sqrtf(ux*ux + uy*uy);
+                        ux /= umag;
+                        uy /= umag;
 
-                    px -= ux;
-                    py -= uy;
-                    float value = sampleRandomData(px, py);
-                    if (std::isnan(value)) break;
-                    acc += value;
-                    samples++;
+                        px -= ux;
+                        py -= uy;
+                        float value = sampleRandomData(px, py);
+                        if (std::isnan(value)) break;
+                        acc += value;
+                        samples++;
+                    }
+                } else {
+                    // we're starting at a null vector; no point in integrating,
+                    // treat this the same as NaN and mask this pixel in output
                 }
 
                 float value = acc / samples;
