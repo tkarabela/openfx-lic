@@ -166,7 +166,11 @@ public :
                 }
 
                 float value = acc / samples;
-                float alpha = (samples > 1) ? 0.0f : 1.0f;
+                float alpha = 1.0f;
+                if (samples <= 1) {
+                    value = 0.0f;
+                    alpha = 0.0f;
+                }
 
                 dstPix[0] = value; // = R
                 dstPix[1] = value; // = G
