@@ -25,3 +25,8 @@ endif()
 add_library(lic SHARED lic.cpp ${SRC})
 target_include_directories(lic PRIVATE ${INC})
 set_target_properties(lic PROPERTIES SUFFIX ".ofx")
+
+add_custom_command(
+        TARGET lic POST_BUILD
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/create_ofx_bundle.py "$<TARGET_FILE:lic>"
+        VERBATIM)
