@@ -57,6 +57,10 @@ protected :
     SimplexNoise noise;
     float frequency;
     int num_steps;
+    bool use_weight_window;
+    int weight_window_width;
+    int weight_window_offset;
+    double _debug_time;
 
     inline float sampleRandomData(float x, float y) {
         return 0.5 + 0.5 * noise.noise(frequency * x, frequency * y);
@@ -73,9 +77,28 @@ protected :
         return *(float *) img->getPixelAddress(x_, y_);
     }
 
+    inline float getStepWeight(int signedIdx) const {
+        if (!use_weight_window) {
+            return 1.0f;
+        } else {
+            int N = 2*num_steps;
+            int idx = (signedIdx + num_steps) % (N + 1);
+            int offsetIdx = (weight_window_offset + num_steps) % N;
+            int offsetIdx2 = ((weight_window_offset + num_steps) % N) + N;
+            int dist = std::min(std::abs(idx - offsetIdx), std::abs(idx - offsetIdx2));
+
+            if (dist > weight_window_width) {
+                return 0.0f;
+            } else {
+                return 1.0f - (float)dist/(float)weight_window_width;
+            }
+        }
+    }
+
 public :
     explicit LICProcessor(OFX::ImageEffect &instance)
-            : OFX::ImageProcessor(instance), vectorXImg_(nullptr), vectorYImg_(nullptr), frequency(1), num_steps(15) {
+            : OFX::ImageProcessor(instance), vectorXImg_(nullptr), vectorYImg_(nullptr), frequency(1), num_steps(15),
+              use_weight_window(false), weight_window_width(10), weight_window_offset(0) {
     }
 
     void setVectorXImg(OFX::Image *v) { vectorXImg_ = v; }
@@ -85,6 +108,14 @@ public :
     void setFrequency(float d) { frequency = d; }
 
     void setNumSteps(int d) { num_steps = d; }
+
+    void setUseWeightWindow(bool x) { use_weight_window = x; }
+
+    void setWeightWindowWidth(int d) { weight_window_width = d; }
+
+    void setWeightWindowOffset(int d) { weight_window_offset = d; }
+
+    void setMyDebugTime(double d) { _debug_time = d; }
 
     void multiThreadProcessImages(OfxRectI procWindow) override {
         assert(_dstImg->getPixelComponents() == OFX::ePixelComponentRGBA);
@@ -96,61 +127,121 @@ public :
 
             for (int x = procWindow.x1; x < procWindow.x2; x++) {
                 auto px0 = (float) x, py0 = (float) y;
-                float px, py;
+                float px, py, weight;
                 float acc = 0.0f;
-                int samples = 0;
+                float weightSum = 0.0f;
 
-                acc += sampleRandomData(px0, py0);
-                samples++;
+                //bool debug_print = x%200 == 0 && y % 200 == 0; // XXX
+                //bool debug_print = x == 600 && y == 400; // XXX
+                bool debug_print = false;
+                if (debug_print) {
+                    printf("--- bake x=%d y=%d t=%lf numsteps=%d www=%d wwo=%d\n", x, y, _debug_time, num_steps, weight_window_width, weight_window_offset); // XXX
+                }
+
+                weight = getStepWeight(0);
+                acc += weight * sampleRandomData(px0, py0);
+                weightSum += weight;
                 float ux = sampleImageData(vectorXImg_, px0, py0);
                 float uy = sampleImageData(vectorYImg_, px0, py0);
+                float ux_initial = ux, uy_initial = uy;
+                float ux_last = ux_initial, uy_last = uy_initial;
+                bool use_last = false;
+
+                if (debug_print) {
+                    printf("initial weight=%.3f ux_initial=%.3f uy_initial=%.3f\n", weight, ux, uy); // XXX
+                }
 
                 if (ux != 0 || uy != 0) {
                     // integrate forward
                     px = px0, py = py0;
                     for (int i = 0; i < num_steps; i++) {
-                        ux = sampleImageData(vectorXImg_, px, py);
-                        uy = sampleImageData(vectorYImg_, px, py);
+                        if (!use_last) {
+                            ux = sampleImageData(vectorXImg_, px, py);
+                            uy = sampleImageData(vectorYImg_, px, py);
+                        } else {
+                            ux = ux_last;
+                            uy = uy_last;
+                        }
 
                         // normalize
                         float umag = sqrtf(ux * ux + uy * uy);
                         ux /= umag;
                         uy /= umag;
+
+                        if (std::isnan(ux) || std::isnan(uy) || (ux == 0 && uy == 0)) {
+                            // we're out of picture / out of area where vectors are defined,
+                            // so we will imagine that the vector field goes in the last known direction to infinity
+                            use_last = true;
+                            ux = ux_last;
+                            uy = uy_last;
+                        }
 
                         px += ux;
                         py += uy;
                         float value = sampleRandomData(px, py);
-                        if (std::isnan(value)) break;
-                        acc += value;
-                        samples++;
+                        weight = getStepWeight(i+1);
+                        acc += weight * value;
+                        weightSum += weight;
+                        ux_last = ux;
+                        uy_last = uy;
+
+                        if (debug_print) {
+                            printf("step %+d weight=%.3f ux=%.3f uy=%.3f px=%.3f py=%.3f\n", i+1, weight, ux, uy, px, py); // XXX
+                        }
                     }
 
                     // integrate backward
                     px = px0, py = py0;
+                    ux_last = ux_initial, uy_last = uy_initial;
+                    use_last = false;
                     for (int i = 0; i < num_steps; i++) {
-                        ux = sampleImageData(vectorXImg_, px, py);
-                        uy = sampleImageData(vectorYImg_, px, py);
+                        if (!use_last) {
+                            ux = sampleImageData(vectorXImg_, px, py);
+                            uy = sampleImageData(vectorYImg_, px, py);
+                        } else {
+                            ux = ux_last;
+                            uy = uy_last;
+                        }
 
                         // normalize
                         float umag = sqrtf(ux * ux + uy * uy);
                         ux /= umag;
                         uy /= umag;
 
+                        if (std::isnan(ux) || std::isnan(uy) || (ux == 0 && uy == 0)) {
+                            // we're out of picture / out of area where vectors are defined,
+                            // so we will imagine that the vector field goes in the last known direction to infinity
+                            use_last = true;
+                            ux = ux_last;
+                            uy = uy_last;
+                        }
+
                         px -= ux;
                         py -= uy;
                         float value = sampleRandomData(px, py);
-                        if (std::isnan(value)) break;
-                        acc += value;
-                        samples++;
+                        weight = getStepWeight(-i-1);
+                        acc += weight * value;
+                        weightSum += weight;
+                        ux_last = ux;
+                        uy_last = uy;
+
+                        if (debug_print) {
+                            printf("step %+d weight=%.3f ux=%.3f uy=%.3f px=%.3f py=%.3f\n", -i-1, weight, ux, uy, px, py); // XXX
+                        }
                     }
                 } else {
                     // we're starting at a null vector; no point in integrating,
                     // treat this the same as NaN and mask this pixel in output
+                    if (debug_print) {
+                        printf("special case - starting at null vector!\n"); // XXX
+                    }
+                    acc = 0.0f;
+                    weightSum = 0.0f;
                 }
 
-                float value = acc / samples;
+                float value = acc / weightSum;
                 float alpha = 1.0f;
-                if (samples <= 1) {
+                if (weightSum < 0.5f) {
                     value = 0.0f;
                     alpha = 0.0f;
                 }
@@ -174,6 +265,9 @@ protected :
     OFX::Clip *dstClip_;
     OFX::DoubleParam *frequency_;
     OFX::IntParam *num_steps_;
+    OFX::BooleanParam *use_weight_window_;
+    OFX::IntParam *weight_window_width_;
+    OFX::IntParam *weight_window_offset_;
 
 public :
     explicit LICPlugin(OfxImageEffectHandle handle)
@@ -187,6 +281,9 @@ public :
 
         frequency_ = fetchDoubleParam("frequency");
         num_steps_ = fetchIntParam("num_steps");
+        use_weight_window_ = fetchBooleanParam("use_weight_window");
+        weight_window_width_ = fetchIntParam("weight_window_width");
+        weight_window_offset_ = fetchIntParam("weight_window_offset");
     }
 
     /* Override the render */
@@ -202,6 +299,9 @@ void LICPlugin::setupAndProcess(LICProcessor &processor, const OFX::RenderArgume
     std::unique_ptr<OFX::Image> vectorY(vectorYClip_->fetchImage(args.time));
     double frequency = frequency_->getValueAtTime(args.time);
     int num_steps = num_steps_->getValueAtTime(args.time);
+    bool use_weight_window = use_weight_window_->getValueAtTime(args.time);
+    int weight_window_width = weight_window_width_->getValueAtTime(args.time);
+    int weight_window_offset = weight_window_offset_->getValueAtTime(args.time);
 
     if (!dst || !vectorX || !vectorY) {
         fprintf(stderr, "LICPlugin::setupAndProcess did not get all images, some are NULL\n");
@@ -230,6 +330,10 @@ void LICPlugin::setupAndProcess(LICProcessor &processor, const OFX::RenderArgume
     processor.setVectorYImg(vectorY.get());
     processor.setFrequency((float) frequency);
     processor.setNumSteps(num_steps);
+    processor.setUseWeightWindow(use_weight_window);
+    processor.setWeightWindowWidth(weight_window_width);
+    processor.setWeightWindowOffset(weight_window_offset);
+    processor.setMyDebugTime(args.time);
 
     // set the render window
     processor.setRenderWindow(args.renderWindow);
@@ -315,6 +419,28 @@ void LICPluginFactory::describeInContext(OFX::ImageEffectDescriptor &desc, OFX::
     num_steps->setDefault(15);
     num_steps->setRange(1, 50);
     num_steps->setDisplayRange(1, 50);
+
+    auto *use_weight_window = desc.defineBooleanParam("use_weight_window");
+    use_weight_window->setLabels("use_weight_window", "Hanning window", "Use weight window");
+    use_weight_window->setScriptName("use_weight_window");
+    use_weight_window->setHint("weight line integral by linear falloff");
+    use_weight_window->setDefault(false);
+
+    auto *weight_window_width = desc.defineIntParam("weight_window_width");
+    weight_window_width->setLabels("weight_window_width", "Hann.w. width", "weight window half-width");
+    weight_window_width->setScriptName("weight_window_width");
+    weight_window_width->setHint("half-width of the window (in steps) - use this for animation");
+    weight_window_width->setDefault(5);
+    weight_window_width->setRange(3, 50);
+    weight_window_width->setDisplayRange(3, 50);
+
+    auto *weight_window_offset = desc.defineIntParam("weight_window_offset");
+    weight_window_offset->setLabels("weight_window_offset", "Hann.w. offset", "weight window offset");
+    weight_window_offset->setScriptName("weight_window_offset");
+    weight_window_offset->setHint("offset of center for the window (in steps) - use this for animation");
+    weight_window_offset->setDefault(0);
+    weight_window_offset->setRange(-10000, 10000);
+    weight_window_offset->setDisplayRange(-100, 100);
 }
 
 OFX::ImageEffect *LICPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum contextEnum) {
